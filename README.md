@@ -32,7 +32,9 @@ This implementation resides in `src/java/` under the package name
 
 ### Installation ###
 - Create a `modules` directory in the Floodlight root.
-- Add a new `modules` property to Floodlight's build.xml file that points to the `modules` directory.
+
+- Add a new `modules` property to Floodlight's build.xml file that points to the
+  `modules` directory.
 
 ```xml
 <property name="modules" location="modules"/>
@@ -44,6 +46,13 @@ srcdir="${source}:${modules}:${thrift.out.dir}"
 ```
 
 - Clone this repository into the `modules` directory.
+
+- Add `dk.martinjlowm.vlan_forwarding.VLANForwarding` in
+  floodlightdefault.properties to enable the module. NOTE: You may have to
+  disable the normal Forwarding module to avoid any conflicts between the two.
+
+- Run `ant` from the Floodlight root and the module is now compiled with
+  Floodlight.
 
 ### Example Usage ###
 
