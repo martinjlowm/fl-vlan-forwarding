@@ -10,7 +10,6 @@ import java.util.HashSet;
 
 
 // Core
-import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFSwitch;
 import net.floodlightcontroller.core.internal.IOFSwitchService;
 import net.floodlightcontroller.core.module.FloodlightModuleContext;
@@ -18,9 +17,6 @@ import net.floodlightcontroller.core.module.FloodlightModuleException;
 import net.floodlightcontroller.core.module.IFloodlightModule;
 import net.floodlightcontroller.core.module.IFloodlightService;
 import net.floodlightcontroller.core.util.AppCookie;
-
-// Device Manager
-import net.floodlightcontroller.devicemanager.IDeviceService;
 
 // Link Discovery
 import net.floodlightcontroller.linkdiscovery.ILinkDiscovery.LDUpdate;
@@ -71,8 +67,6 @@ public class VLANForwarding implements IFloodlightModule,
 
 	private static Logger log;
 
-	protected IDeviceService deviceManagerService;
-	protected IFloodlightProviderService floodlightProviderService;
 	protected IOFSwitchService switchService;
 	protected IRoutingService routingEngineService;
 	protected IStaticFlowEntryPusherService flowService;
@@ -109,8 +103,6 @@ public class VLANForwarding implements IFloodlightModule,
 		Collection<Class<? extends IFloodlightService>> l =
 			new ArrayList<Class<? extends IFloodlightService>>();
 
-		l.add(IDeviceService.class);
-		l.add(IFloodlightProviderService.class);
 		l.add(IOFSwitchService.class);
 		l.add(IRoutingService.class);
 		l.add(IStaticFlowEntryPusherService.class);
@@ -122,8 +114,6 @@ public class VLANForwarding implements IFloodlightModule,
 	@Override
 	public void init(FloodlightModuleContext context)
 		throws FloodlightModuleException {
-		floodlightProviderService = context
-			.getServiceImpl(IFloodlightProviderService.class);
 		flowService = context
 			.getServiceImpl(IStaticFlowEntryPusherService.class);
 		routingEngineService = context
@@ -152,21 +142,17 @@ public class VLANForwarding implements IFloodlightModule,
 		flowService.deleteAllFlows();
 
 		Set<DatapathId> switches = switchService.getAllSwitchDpids();
-		Set<IOFSwitch> edge_switches = new HashSet<IOFSwitch>();
 
-		Map<IOFSwitch, Set<OFPort>> edge_switches_ports =
-			new HashMap<IOFSwitch, Set<OFPort>>();
-
-		log.info("topologyService: {}", topologyService);
+		List<List<Object>> edgeLinks =new ArrayList<List<Object>>();
 
 		IOFSwitch sw;
 		Set<OFPort> allKnownPorts;
 		for (DatapathId dpid : switches) {
 			sw = switchService.getSwitch(dpid);
 
-			Set<OFPort> edge_ports = new HashSet<OFPort>();
+			Set<OFPort> edgePorts = new HashSet<OFPort>();
 			for (OFPortDesc pd : sw.getPorts()) {
-				edge_ports.add(pd.getPortNo());
+				edgePorts.add(pd.getPortNo());
 			}
 
 			allKnownPorts = topologyService
@@ -176,45 +162,46 @@ public class VLANForwarding implements IFloodlightModule,
 				continue;
 			}
 
-			edge_ports.removeAll(allKnownPorts);
-			edge_ports.remove(OFPort.LOCAL);
-			log.info("edge_ports: {}", edge_ports);
+			edgePorts.removeAll(allKnownPorts);
+			edgePorts.remove(OFPort.LOCAL);
 
-			if (edge_ports.isEmpty()) {
+			if (edgePorts.isEmpty()) {
 				continue;
 			}
 
-			edge_switches_ports.put(sw, edge_ports);
+			for (OFPort port : edgePorts) {
+				ArrayList<Object> linkEntry =
+					new ArrayList<Object>();
+				linkEntry.add(sw);
+				linkEntry.add(port);
+
+				edgeLinks.add(linkEntry);
+			}
 		}
 
-		List<IOFSwitch> of_edge_switches =
-			new ArrayList<IOFSwitch>(edge_switches_ports.keySet());
-
-		int num_edge_switches = of_edge_switches.size();
+		int numEdgeLinks = edgeLinks.size();
 
 		// Find bidirectional routes in the cluster
-		IOFSwitch i_sw, e_sw;
-		Set<OFPort> ingress_ports, egress_ports;
-		for (int ingress_idx = 0;
-		     ingress_idx < num_edge_switches - 1;
-		     ingress_idx++) {
-			i_sw = of_edge_switches.get(ingress_idx);
-			ingress_ports = edge_switches_ports.get(i_sw);
+		List<Object> iLinkEntry, eLinkEntry;
+		IOFSwitch iSwitch, eSwitch;
+		OFPort iPort, ePort;
+		int iIndex, eIndex;
+		for (iIndex = 0;
+		     iIndex < numEdgeLinks - 1;
+		     iIndex++) {
+			iLinkEntry = edgeLinks.get(iIndex);
+			iSwitch = (IOFSwitch) iLinkEntry.get(0);
+			iPort = (OFPort) iLinkEntry.get(1);
 
-			for (int egress_idx = ingress_idx + 1;
-			     egress_idx < num_edge_switches;
-			     egress_idx++) {
-				e_sw = of_edge_switches.get(egress_idx);
-				egress_ports = edge_switches_ports.get(e_sw);
+			for (eIndex = iIndex + 1;
+			     eIndex < numEdgeLinks;
+			     eIndex++) {
+				eLinkEntry = edgeLinks.get(eIndex);
+				eSwitch = (IOFSwitch) eLinkEntry.get(0);
+				ePort = (OFPort) eLinkEntry.get(1);
 
-				for (OFPort i_port : ingress_ports) {
-					for (OFPort e_port : egress_ports) {
-						pushRoute(i_sw.getId(),
-							  i_port,
-							  e_sw.getId(),
-							  e_port);
-					}
-				}
+				pushRoute(iSwitch.getId(), iPort,
+					  eSwitch.getId(), ePort);
 			}
 		}
 	}
@@ -235,36 +222,40 @@ public class VLANForwarding implements IFloodlightModule,
 			      (ePort.getPortNumber() & 0xFF));
 
 		List<NodePortTuple> switchPortList = route.getPath();
-		log.info("srcNet: {}, dstNet: {}", srcNet, dstNet);
 		int numSwitches = switchPortList.size();
+
 		for (int idx = numSwitches - 1; idx > 0; idx -= 2) {
-			DatapathId switchDPID = switchPortList.get(idx).getNodeId();
+			DatapathId switchDPID =
+				switchPortList.get(idx).getNodeId();
 			IOFSwitch sw = switchService.getSwitch(switchDPID);
 
 			if (sw == null) {
 				if (log.isWarnEnabled()) {
-					log.warn("Unable to push route, switch at DPID {} " + "not available", switchDPID);
+					log.warn("Unable to push route, " +
+						 "switch at DPID {} " +
+						 "not available", switchDPID);
 				}
 				return;
 			}
 
-			// This must be bidirectional and therefore are in- and
-			// output bad identifiers for ports
 			OFPort outPort = switchPortList.get(idx).getPortId();
 			OFPort inPort = switchPortList.get(idx - 1).getPortId();
 
-			String flowName = String.format("VLAN_%s_%d_%d", sw.getId(), srcNet, dstNet);
+			String flowName = String.format("VLAN_%s_%d_%d",
+							sw.getId(), srcNet,
+							dstNet);
 			String flowNameReverse = "REVERSE_" + flowName;
 
 			boolean isStartEdgeSwitch = 1 == idx;
 			boolean isEndEdgeSwitch = numSwitches - 1 == idx;
+			boolean isSingleSwitch = numSwitches == 2;
 
-			rebuildFlow(sw, flowName, inPort, outPort,
-				    isStartEdgeSwitch, isEndEdgeSwitch, false,
-				    srcNet, dstNet);
-			rebuildFlow(sw, flowNameReverse, outPort, inPort,
-				    isStartEdgeSwitch, isEndEdgeSwitch, true,
-				    srcNet, dstNet);
+			buildFlow(sw, flowName, inPort, outPort,
+				  isStartEdgeSwitch, isEndEdgeSwitch, false,
+				  srcNet, dstNet, isSingleSwitch);
+			buildFlow(sw, flowNameReverse, outPort, inPort,
+				  isStartEdgeSwitch, isEndEdgeSwitch, true,
+				  srcNet, dstNet, isSingleSwitch);
 		}
 
 		// 0x000 and 0xFFF are reserved, and 0x001 is normally
@@ -272,22 +263,21 @@ public class VLANForwarding implements IFloodlightModule,
 		vlanID = (short) ((vlanID % 0x0FFF) + (short) 1);
 		vlanID = (short) (vlanID + (short) (vlanID == 1 ? 1 : 0));
 
-		log.info("Pushed route {}",
-			 route);
+		log.info("Pushed route {}", route);
 	}
 
-	public void rebuildFlow(IOFSwitch sw,
-				String flowName, OFPort inPort, OFPort outPort,
-				boolean isStartEdgeSwitch,
-				boolean isEndEdgeSwitch, boolean isReverse,
-				int srcNet, int dstNet) {
+	public void buildFlow(IOFSwitch sw,
+			      String flowName, OFPort inPort, OFPort outPort,
+			      boolean isStartEdgeSwitch,
+			      boolean isEndEdgeSwitch, boolean isReverse,
+			      int srcNet, int dstNet, boolean isSingleSwitch) {
 		OFFactory factory = sw.getOFFactory();
 		OFActions actions = factory.actions();
 
 		OFActionOutput.Builder aob = actions.buildOutput();
 		List<OFAction> actionList = new ArrayList<OFAction>();
 		Match.Builder mb = factory.buildMatch();
-		Match.Builder mb_arp = factory.buildMatch();
+		Match.Builder mbARP = factory.buildMatch();
 
 		// VLAN builders
 		OFOxms oxms = factory.oxms();
@@ -296,24 +286,23 @@ public class VLANForwarding implements IFloodlightModule,
 		OFActionSetField asfv = actions.buildSetField()
 			.setField(sfv.build()).build();
 
-		// Destination VLAN IP network
-
 		// Matches and output actions
 		aob.setPort(outPort);
 		aob.setMaxLen(Integer.MAX_VALUE);
 		mb.setExact(MatchField.IN_PORT, inPort);
-		mb_arp.setExact(MatchField.IN_PORT, inPort);
+		mbARP.setExact(MatchField.IN_PORT, inPort);
 
 		if (isStartEdgeSwitch || isEndEdgeSwitch) {
-			if ((isStartEdgeSwitch && !isReverse) ||
-			    (isEndEdgeSwitch && isReverse)) {
-				actionList.add(actions.pushVlan(EthType.VLAN_FRAME));
-				actionList.add(asfv);
-				log.info("ActionList: {}", actionList);
-			}
-			else {
-				mb.setExact(MatchField.VLAN_VID, OFVlanVidMatch.ofVlan(vlanID));
-				actionList.add(actions.popVlan());
+			if (!isSingleSwitch) {
+				if ((isStartEdgeSwitch && !isReverse) ||
+				    (isEndEdgeSwitch && isReverse)) {
+					actionList.add(actions.pushVlan(EthType.VLAN_FRAME));
+					actionList.add(asfv);
+				}
+				else {
+					mb.setExact(MatchField.VLAN_VID, OFVlanVidMatch.ofVlan(vlanID));
+					actionList.add(actions.popVlan());
+				}
 			}
 
 			IPv4Address subnetMask = IPv4Address.of("255.255.255.0");
@@ -326,8 +315,8 @@ public class VLANForwarding implements IFloodlightModule,
 				mb.setMasked(MatchField.IPV4_DST, dstIP,
 					     subnetMask);
 
-				mb_arp.setExact(MatchField.ETH_TYPE, EthType.ARP);
-				mb_arp.setMasked(MatchField.ARP_TPA, dstIP,
+				mbARP.setExact(MatchField.ETH_TYPE, EthType.ARP);
+				mbARP.setMasked(MatchField.ARP_TPA, dstIP,
 						 subnetMask);
 			} else if (isEndEdgeSwitch && isReverse) {
 				IPv4Address srcIP = IPv4Address
@@ -338,8 +327,8 @@ public class VLANForwarding implements IFloodlightModule,
 				mb.setMasked(MatchField.IPV4_DST, srcIP,
 					     subnetMask);
 
-				mb_arp.setExact(MatchField.ETH_TYPE, EthType.ARP);
-				mb_arp.setMasked(MatchField.ARP_TPA, srcIP,
+				mbARP.setExact(MatchField.ETH_TYPE, EthType.ARP);
+				mbARP.setMasked(MatchField.ARP_TPA, srcIP,
 						 subnetMask);
 			}
 		}
@@ -354,11 +343,12 @@ public class VLANForwarding implements IFloodlightModule,
 			flowName);
 		if ((isStartEdgeSwitch && !isReverse)
 		    || (isEndEdgeSwitch && isReverse)) {
-			addFlow(sw, factory, mb_arp.build(), actionList, inPort,
+			addFlow(sw, factory, mbARP.build(), actionList, inPort,
 				flowName + "_ARP");
 		}
 	}
 
+	// Write flow to switch
 	public void addFlow(IOFSwitch sw, OFFactory factory, Match m,
 			    List<OFAction> actions,
 			    OFPort inPort, String flowName) {
