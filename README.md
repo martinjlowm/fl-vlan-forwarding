@@ -33,13 +33,16 @@ This implementation resides in `src/java/` under the package name
 ### Installation ###
 - Create a `modules` directory in the Floodlight root.
 - Add a new `modules` property to Floodlight's build.xml file that points to the `modules` directory.
-  ```xml
-  <property name="modules" location="modules"/>
-  ```
+
+```xml
+<property name="modules" location="modules"/>
+```
+
 - Add this new property to the `javac` compile target.
-  ```xml
-  srcdir="${source}:${modules}:${thrift.out.dir}"
-  ```
+```xml
+srcdir="${source}:${modules}:${thrift.out.dir}"
+```
+
 - Clone this repository into the `modules` directory.
 
 ### Example Usage ###
